@@ -3,3 +3,7 @@ Flask-SQLAlchemy>=2.5
 pyodbc==5.0.0
 flask-jwt-extended==4.4.4  
 flask-swagger-ui==4.11.1
+gunicorn
+Flask==2.2.2
+connexion[swagger-ui]==2.14.1
+Flask-Migrate
