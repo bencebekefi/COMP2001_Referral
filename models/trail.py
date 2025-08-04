@@ -3,7 +3,7 @@ from .location import Location
 
 class Trail(db.Model):
     __tablename__ = 'Trail'
-    __table_args__ = {'schema': 'CW2'}
+    __table_args__ = {'schema': 'Referral'}
 
     TrailID = db.Column(db.Integer, primary_key=True)
     TrailName = db.Column(db.String(100), nullable=False)
@@ -13,7 +13,7 @@ class Trail(db.Model):
     TrailEstTime = db.Column(db.String(10), nullable=False)
     TrailRouteType = db.Column(db.String(10), nullable=False)
     TrailDescription = db.Column(db.Text, nullable=False)
-    LocationID = db.Column(db.Integer, db.ForeignKey('CW2.Location.LocationID'), nullable=False)
+    LocationID = db.Column(db.Integer, db.ForeignKey('Referral.Location.LocationID'), nullable=False)
 
-   
+
     location = db.relationship('Location', backref=db.backref('trails', lazy=True))

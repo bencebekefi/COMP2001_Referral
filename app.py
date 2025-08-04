@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request, abort, session, send_from_directory
 from flask_migrate import Migrate
 from flask_swagger_ui import get_swaggerui_blueprint
 from models import db, Trail, User
+from models import Comment
 from config import DevelopmentConfig, TestingConfig, ProductionConfig
 from sqlalchemy import text
 import requests
@@ -295,13 +296,117 @@ def create_app():
             logging.error(f"Error deleting trail with ID {trail_id}: {e}")
             abort(500, description="Internal Server Error")
 
-    return app
+    # GET all comments
+    @app.route('/comments', methods=['GET'])
+    def get_all_comments():
+        try:
+            comments = Comment.query.filter_by(IsArchived=False).all()
+            result = [
+                {
+                    "CommentID": c.CommentID,
+                    "TrailID": c.TrailID,
+                    "UserID": c.UserID,
+                    "CommentText": c.CommentText,
+                    "CommentDate": c.CommentDate.isoformat()
+                }
+                for c in comments
+            ]
+            return jsonify({"comments": result}), 200
+        except Exception as e:
+            logging.error(f"Error retrieving all comments: {e}")
+            return jsonify({"error": "Internal Server Error"}), 500
 
-    @app.route('/logout', methods=['POST'])
-    def logout():
-        session.clear()
-        logging.info("User logged out successfully.")
-        return jsonify({"message": "Logged out successfully."}), 200
+    # GET all comments for a specific trail
+    @app.route('/trails/<int:trail_id>/comments', methods=['GET'])
+    def get_comments_for_trail(trail_id):
+        try:
+            comments = Comment.query.filter_by(TrailID=trail_id, IsArchived=False).all()
+            result = [
+                {
+                    "CommentID": c.CommentID,
+                    "TrailID": c.TrailID,
+                    "UserID": c.UserID,
+                    "CommentText": c.CommentText,
+                    "CommentDate": c.CommentDate.isoformat()
+                }
+                for c in comments
+            ]
+            return jsonify({"comments": result}), 200
+        except Exception as e:
+            logging.error(f"Error retrieving comments: {e}")
+            return jsonify({"error": "Internal Server Error"}), 500
+
+    # POST a new comment to a trail
+    @app.route("/trails/<int:trail_id>/comments", methods=["POST"])
+    def add_comment(trail_id):
+        if "username" not in session:
+            logging.warning("Unauthorized comment attempt.")
+            return jsonify({"error": "Unauthorized"}), 401
+
+        try:
+            data = request.get_json()
+            comment_text = data.get("CommentText")
+
+            if not comment_text:
+                return jsonify({"error": "CommentText is required."}), 400
+
+            user = User.query.filter_by(EmailAddress=session["username"]).first()
+
+            comment = Comment(
+                TrailID=trail_id,
+                UserID=user.UserID,
+                CommentText=comment_text,
+                CommentDate=datetime.datetime.utcnow(),
+                IsArchived=False
+            )
+            db.session.add(comment)
+            db.session.commit()
+
+            logging.info(f"Comment added to trail {trail_id} by user {user.EmailAddress}")
+            return jsonify({"message": "Comment added"}), 201
+
+        except Exception as e:
+            logging.error(f"Error adding comment: {e}")
+            return jsonify({"error": "Server error"}), 500
+
+    # PUT update a comment
+    @app.route('/comments/<int:comment_id>', methods=['PUT'])
+    def edit_comment(comment_id):
+        comment = Comment.query.get(comment_id)
+        if not comment:
+            return jsonify({"error": "Comment not found"}), 404
+
+        user = User.query.filter_by(EmailAddress=session.get('username')).first()
+        if not user or (user.UserID != comment.UserID and session.get('role') != 'Admin'):
+            return jsonify({"error": "Forbidden"}), 403
+
+        data = request.get_json()
+
+        content = data.get("CommentText")
+        if not content:
+            return jsonify({"error": "Missing CommentText"}), 400
+
+        comment.CommentText = content
+        db.session.commit()
+        logging.info(f"Comment {comment_id} updated by user {user.EmailAddress}")
+        return jsonify({"message": "Comment updated"}), 200
+
+    # DELETE a comment
+    @app.route('/comments/<int:comment_id>', methods=['DELETE'])
+    def archive_comment(comment_id):
+        comment = Comment.query.get(comment_id)
+        if not comment:
+            return jsonify({"error": "Comment not found"}), 404
+
+        if session.get('role') != 'Admin':
+            return jsonify({"error": "Forbidden: Admins only"}), 403
+
+        comment.IsArchived = True
+        db.session.commit()
+        logging.info(f"Comment {comment_id} archived by admin {session.get('username')}")
+        return jsonify({"message": "Comment archived"}), 200
+
+    return app
 
 if __name__ == '__main__':
     app = create_app()

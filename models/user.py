@@ -2,7 +2,7 @@ from . import db
 
 class User(db.Model):
     __tablename__ = 'User'
-    __table_args__ = {'schema': 'CW2'}
+    __table_args__ = {'schema': 'Referral'}
 
     UserID = db.Column(db.Integer, primary_key=True)
     EmailAddress = db.Column(db.String(255), nullable=False, unique=True)

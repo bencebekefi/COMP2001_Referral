@@ -2,7 +2,8 @@ from . import db
 
 class Info(db.Model):
     __tablename__ = 'Info'
-    __table_args__ = {'schema': 'CW2'}
+    __table_args__ = {'schema': 'Referral'}
+
 
     InfoID = db.Column(db.Integer, primary_key=True)
     InfoName = db.Column(db.String(255), nullable=False)
