@@ -10,4 +10,4 @@ from .user import User
 from .comment import Comment
 
 
-__all__ = ['db', 'Trail', 'Location', 'User']
+__all__ = ['db', 'Trail', 'Location', 'User', 'Comment']

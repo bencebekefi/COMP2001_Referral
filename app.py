@@ -1,414 +1,273 @@
 from flask import Flask, jsonify, request, abort, session, send_from_directory
 from flask_migrate import Migrate
 from flask_swagger_ui import get_swaggerui_blueprint
-from models import db, Trail, User
-from models import Comment
-from config import DevelopmentConfig, TestingConfig, ProductionConfig
 from sqlalchemy import text
 import requests
 import logging
 import os
 import datetime
 
+from config import DevelopmentConfig, TestingConfig, ProductionConfig  # :contentReference[oaicite:2]{index=2}
+from models import db, Trail, User, Comment
+
 def create_app():
+    # -- Flask + Config --------------------------------------------------
     app = Flask(__name__)
 
-    # Secret key for session management
-    app.secret_key = os.environ.get("SECRET_KEY", "ee179677c3aba6ad5fc1f2e0a8e4544a8959f5e79e3c82621f21398270c85be7")
+    # Select config based on FLASK_ENV
+    env = os.environ.get('FLASK_ENV', 'development').lower()
+    if env == 'production':
+        app.config.from_object(ProductionConfig)
+    elif env == 'testing':
+        app.config.from_object(TestingConfig)
+    else:
+        app.config.from_object(DevelopmentConfig)
 
-    # Logging configuration
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
-    logging.info("Starting the application...")
+    # Secret key (falls back to Config.SECRET_KEY)
+    app.secret_key = app.config.get('SECRET_KEY', 'change-me')
 
-    # Environment configuration
-    env = os.environ.get('FLASK_ENV', 'development')
-    logging.info(f"Loading configuration for {env} environment...")
-  
-   
-    app.config.from_object(ProductionConfig)
-    
+    # -- Logging ----------------------------------------------------------
+    logging.basicConfig(level=logging.DEBUG,
+                        format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.info(f"Starting app in {env!r} environment...")
 
-
-    # Database and migrations setup
-    db.init_app(app)
-    Migrate(app, db)
+    # -- Database & Migrations --------------------------------------------
+    db.init_app(app)                          # single SQLAlchemy init!
+    Migrate(app, db)                          # Flask-Migrate
     logging.info("Database initialized successfully.")
 
-    # Swagger UI configuration
-    SWAGGER_URL = '/api/docs'
-    API_URL = '/swagger.json'  # Points to the local Swagger YAML file
+    # -- Swagger UI -------------------------------------------------------
     swaggerui_blueprint = get_swaggerui_blueprint(
-        SWAGGER_URL,
-        API_URL,
+        app.config['SWAGGER_URL'],
+        app.config['API_URL'],
         config={'app_name': "Trails API"}
     )
-    app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
+    app.register_blueprint(swaggerui_blueprint,
+                           url_prefix=app.config['SWAGGER_URL'])
     logging.info("Swagger UI registered successfully.")
 
-    # Swagger Route for Swagger JSON
     @app.route('/swagger.json')
     def swagger_json():
         try:
             return send_from_directory('static', 'swagger.yml')
         except Exception as e:
             logging.error(f"Error serving swagger.yml: {e}")
-            abort(500, description="Swagger specification file not found.")
+            abort(500, description="Swagger spec not found")
 
-    # External API URL for authentication
+    # -- Authentication Middleware ---------------------------------------
     AUTH_API_URL = "https://web.socem.plymouth.ac.uk/COMP2001/auth/api/users"
+    def role_required(role):
+        def decorator(f):
+            def wrapped(*args, **kwargs):
+                if 'username' not in session or 'role' not in session:
+                    abort(401, description="Unauthorized")
+                if session['role'] != role:
+                    abort(403, description="Forbidden")
+                return f(*args, **kwargs)
+            wrapped.__name__ = f.__name__
+            return wrapped
+        return decorator
 
-    #  Middleware for role-based access control
-    def role_required(required_role):
-         def decorator(func):
-             def wrapper(*args, **kwargs):
-                 if 'username' not in session or 'role' not in session:
-                     logging.warning("Unauthorized access attempt.")
-                     abort(401, description="Unauthorized: Please log in.")
-                 if session['role'] != required_role:
-                     logging.warning(f"Access denied for user {session['username']} with role {session['role']}.")
-                     abort(403, description="Forbidden: You do not have permission to access this resource.")
-                 return func(*args, **kwargs)
-             wrapper.__name__ = func.__name__
-             return wrapper
-         return decorator
-
+    # -- Healthcheck ------------------------------------------------------
     @app.route('/test-db')
     def test_db():
         try:
-            
-            result = db.session.execute(text('SELECT 1'))
-            return jsonify({"message": "Database connection successful!"}), 200
+            db.session.execute(text('SELECT 1'))
+            return jsonify(message="Database OK"), 200
         except Exception as e:
-            logging.error(f"Database connection failed: {e}")
-            return jsonify({"error": "Database connection failed", "details": str(e)}), 500
+            logging.error(f"DB failed: {e}")
+            return jsonify(error="DB connection failed"), 500
 
+    # -- Login / Logout --------------------------------------------------
     @app.route('/login', methods=['POST'])
     def login():
+        if not request.is_json:
+            return jsonify(error="Must send JSON"), 400
+        creds = request.get_json()
+        email = creds.get('email')
+        pwd   = creds.get('password')
+        if not email or not pwd:
+            return jsonify(error="Email+password required"), 400
+
         try:
-            if not request.is_json:
-                logging.warning("Request does not contain valid JSON.")
-                return jsonify({"error": "Request must be in JSON format."}), 400
-
-            credentials = request.get_json()
-            email = credentials.get('email')
-            password = credentials.get('password')  
-            if not email or not password:
-                return jsonify({"error": "Email and password are required."}), 400
-
-        
-            auth_payload = {'email': email, 'password': password}
-
-            
-            response = requests.post(AUTH_API_URL, json=auth_payload)
-
-            if response.status_code == 200:
-                # Parse the API response
-                api_response = response.json()
-
-                if isinstance(api_response, list) and "Verified" in api_response and "True" in api_response:
-                    # Check the SQL database for user role
+            r = requests.post(AUTH_API_URL, json=dict(email=email, password=pwd))
+            if r.status_code == 200:
+                api_resp = r.json()
+                # expecting ["Verified", "True"] somewhere in list
+                if isinstance(api_resp, list) and "Verified" in api_resp:
                     user = User.query.filter_by(EmailAddress=email).first()
-                    if user:
-                        session['username'] = email
-                        session['role'] = user.Role  
-                        session['logged_in_at'] = datetime.datetime.utcnow().isoformat()
+                    if not user:
+                        return jsonify(error="User not in local DB"), 404
 
-                        logging.info(f"User {email} authenticated successfully as {user.Role}.")
-                        return jsonify({
-                            "message": "Login successful",
-                            "username": email,
-                            "role": user.Role
-                        }), 200
-                    else:
-                        logging.warning(f"User {email} not found in the local database.")
-                        return jsonify({"error": "User is not registered in the system."}), 404
+                    session['username']    = email
+                    session['role']        = user.Role
+                    session['logged_in_at']= datetime.datetime.utcnow().isoformat()
+                    return jsonify(message="Login OK", role=user.Role), 200
 
                 else:
-                    logging.error("Invalid API response format")
-                    return jsonify({"error": "Invalid response from authentication service."}), 500
+                    return jsonify(error="Auth service rejected you"), 401
 
-            elif response.status_code == 401:
-                logging.warning(f"Authentication failed for email: {email}")
-                return jsonify({"error": "Invalid email or password."}), 401
+            return jsonify(error="Auth service error", details=r.text), r.status_code
 
-            else:       
-                logging.error(f"External API error: {response.status_code} - {response.text}")
-                return jsonify({"error": "External API error", "details": response.text}), 500
+        except requests.RequestException as e:
+            logging.error(f"Auth API unreachable: {e}")
+            return jsonify(error="Auth service unreachable"), 503
 
-        except requests.exceptions.RequestException as e:  
-            logging.error(f"Error connecting to external API: {e}")
-            return jsonify({"error": "Unable to connect to the authentication service."}), 500
-
-        except Exception as e:
-            logging.error(f"Unexpected error during login: {e}")
-            return jsonify({"error": "Internal Server Error."}), 500
-
-
-    # Logout Route
     @app.route('/logout', methods=['POST'])
     def logout():
         session.clear()
-        logging.info("User logged out successfully.")
-        return jsonify({"message": "Logged out successfully."}), 200
+        return jsonify(message="Logged out"), 200
 
-    # CRUD operations with role-based access control
+    # -- Trails CRUD ------------------------------------------------------
     @app.route('/trails', methods=['GET'])
     def get_all_trails():
-        try:
-            # Retrieve all trails from the database
-            trails = Trail.query.all()
-            
-            
-            trails_data = [
-                {
-                    "TrailID": trail.TrailID,
-                    "TrailName": trail.TrailName,
-                    "TrailRating": float(trail.TrailRating) if trail.TrailRating is not None else None,
-                    "TrailDifficulty": trail.TrailDifficulty,
-                    "TrailDistance": float(trail.TrailDistance),
-                    "TrailEstTime": trail.TrailEstTime,
-                    "TrailRouteType": trail.TrailRouteType,
-                    "TrailDescription": trail.TrailDescription,
-                    "LocationID": trail.LocationID
-                }
-                for trail in trails
-            ]
-            
-            logging.info("All trails retrieved successfully.")
-            return jsonify({"trails": trails_data}), 200
-        except Exception as e:
-            logging.error(f"Error fetching trails: {e}")
-            abort(500, description="Internal Server Error")
+        trails = Trail.query.all()
+        data = [{
+            "TrailID":       t.TrailID,
+            "TrailName":     t.TrailName,
+            "TrailRating":   float(t.TrailRating) if t.TrailRating is not None else None,
+            "TrailDifficulty": t.TrailDifficulty,
+            "TrailDistance": float(t.TrailDistance),
+            "TrailEstTime":  t.TrailEstTime,
+            "TrailRouteType": t.TrailRouteType,
+            "TrailDescription": t.TrailDescription,
+            "LocationID":    t.LocationID
+        } for t in trails]
+        return jsonify(trails=data), 200
 
-    # GET a specific trail
     @app.route('/trails/<int:trail_id>', methods=['GET'])
     def get_trail(trail_id):
-        try:
-            trail = Trail.query.get(trail_id)
-            if not trail:
-                logging.warning(f"Trail with ID {trail_id} not found.")
-                abort(404, description=f"Trail with ID {trail_id} not found.")
-            trail_data = {
-                "TrailID": trail.TrailID,
-                "TrailName": trail.TrailName,
-                "TrailRating": float(trail.TrailRating) if trail.TrailRating is not None else None,
-                "TrailDifficulty": trail.TrailDifficulty,
-                "TrailDistance": float(trail.TrailDistance),
-                "TrailEstTime": trail.TrailEstTime,
-                "TrailRouteType": trail.TrailRouteType,
-                "TrailDescription": trail.TrailDescription,
-                "LocationID": trail.LocationID
-            }
-            logging.info(f"Trail with ID {trail_id} retrieved successfully.")
-            return jsonify(trail_data), 200
-        except Exception as e:
-            logging.error(f"Error fetching trail with ID {trail_id}: {e}")
-            abort(500, description="Internal Server Error")
+        t = Trail.query.get_or_404(trail_id,
+                description=f"Trail {trail_id} not found")
+        return jsonify({
+            "TrailID":       t.TrailID,
+            "TrailName":     t.TrailName,
+            "TrailRating":   float(t.TrailRating) if t.TrailRating is not None else None,
+            "TrailDifficulty": t.TrailDifficulty,
+            "TrailDistance": float(t.TrailDistance),
+            "TrailEstTime":  t.TrailEstTime,
+            "TrailRouteType": t.TrailRouteType,
+            "TrailDescription": t.TrailDescription,
+            "LocationID":    t.LocationID
+        }), 200
 
     @app.route('/trails', methods=['POST'])
-    @role_required('Admin')  # Ensure only admins can create trails
+    @role_required('Admin')
     def create_trail():
-        try:
-            # Get the JSON data from the request
-            data = request.get_json()
-            if not data:
-                logging.warning("No data provided in request.")
-                abort(400, description="Request body cannot be empty.")
+        data = request.get_json() or {}
+        missing = [f for f in (
+            "TrailName","TrailDifficulty","TrailDistance",
+            "TrailEstTime","TrailRouteType","TrailDescription",
+            "LocationID"
+        ) if f not in data]
+        if missing:
+            return jsonify(error="Missing fields", fields=missing), 400
 
-            # Validate required fields
-            required_fields = ["TrailName", "TrailDifficulty", "TrailDistance", "TrailEstTime", "TrailRouteType", "TrailDescription", "LocationID"]
-            for field in required_fields:
-                if field not in data:
-                    logging.warning(f"Missing field: {field}")
-                    abort(400, description=f"Missing field: {field}")
+        t = Trail(**{k: data[k] for k in data if hasattr(Trail, k)})
+        db.session.add(t)
+        db.session.commit()
+        return jsonify(message="Created", TrailID=t.TrailID), 201
 
-            # Optional field: TrailRating
-            trail_rating = data.get("TrailRating", None)  # Default to None if not provided
-
-            # Create a new trail object
-            new_trail = Trail(
-                TrailName=data["TrailName"],
-                TrailDifficulty=data["TrailDifficulty"],
-                TrailDistance=data["TrailDistance"],
-                TrailEstTime=data["TrailEstTime"],
-                TrailRouteType=data["TrailRouteType"],
-                TrailDescription=data["TrailDescription"],
-                LocationID=data["LocationID"],
-                TrailRating=trail_rating  
-            )
-
-            # Add and commit to the database
-            db.session.add(new_trail)
-            db.session.commit()
-
-            logging.info(f"Trail {new_trail.TrailName} created successfully with ID {new_trail.TrailID}.")
-            return jsonify({
-                "message": "Trail created successfully",
-                "TrailID": new_trail.TrailID
-            }), 201
-
-        except Exception as e:
-            logging.error(f"Error creating trail: {e}")
-            abort(500, description="Internal Server Error")
-
-    # PUT update a trail
     @app.route('/trails/<int:trail_id>', methods=['PUT'])
     @role_required('Admin')
     def update_trail(trail_id):
-        try:
-            trail = Trail.query.get(trail_id)
-            if not trail:
-                logging.warning(f"Trail with ID {trail_id} not found.")
-                abort(404, description=f"Trail with ID {trail_id} not found.")
-            data = request.get_json()
-            if not data:
-                logging.warning("No data provided in request.")
-                abort(400, description="No data provided.")
-            trail.TrailName = data.get("TrailName", trail.TrailName)
-            trail.TrailRating = data.get("TrailRating", trail.TrailRating)
-            trail.TrailDifficulty = data.get("TrailDifficulty", trail.TrailDifficulty)
-            trail.TrailDistance = data.get("TrailDistance", trail.TrailDistance)
-            trail.TrailEstTime = data.get("TrailEstTime", trail.TrailEstTime)
-            trail.TrailRouteType = data.get("TrailRouteType", trail.TrailRouteType)
-            trail.TrailDescription = data.get("TrailDescription", trail.TrailDescription)
-            trail.LocationID = data.get("LocationID", trail.LocationID)
-            db.session.commit()
-            logging.info(f"Trail with ID {trail_id} updated successfully.")
-            return jsonify({"message": "Trail updated successfully"}), 200
-        except Exception as e:
-            logging.error(f"Error updating trail with ID {trail_id}: {e}")
-            abort(500, description="Internal Server Error")
+        t = Trail.query.get_or_404(trail_id,
+                description=f"Trail {trail_id} not found")
+        data = request.get_json() or {}
+        for k, v in data.items():
+            if hasattr(t, k):
+                setattr(t, k, v)
+        db.session.commit()
+        return jsonify(message="Updated"), 200
 
-    # DELETE a trail
     @app.route('/trails/<int:trail_id>', methods=['DELETE'])
     @role_required('Admin')
     def delete_trail(trail_id):
-        try:
-            trail = Trail.query.get(trail_id)
-            if not trail:
-                logging.warning(f"Trail with ID {trail_id} not found.")
-                abort(404, description=f"Trail with ID {trail_id} not found.")
-            db.session.delete(trail)
-            db.session.commit()
-            logging.info(f"Trail with ID {trail_id} deleted successfully.")
-            return jsonify({"message": f"Trail with ID {trail_id} deleted successfully."}), 200
-        except Exception as e:
-            logging.error(f"Error deleting trail with ID {trail_id}: {e}")
-            abort(500, description="Internal Server Error")
+        t = Trail.query.get_or_404(trail_id,
+                description=f"Trail {trail_id} not found")
+        db.session.delete(t)
+        db.session.commit()
+        return jsonify(message="Deleted"), 200
 
-    # GET all comments
+    # -- Comments ---------------------------------------------------------
     @app.route('/comments', methods=['GET'])
     def get_all_comments():
-        try:
-            comments = Comment.query.filter_by(IsArchived=False).all()
-            result = [
-                {
-                    "CommentID": c.CommentID,
-                    "TrailID": c.TrailID,
-                    "UserID": c.UserID,
-                    "CommentText": c.CommentText,
-                    "CommentDate": c.CommentDate.isoformat()
-                }
-                for c in comments
-            ]
-            return jsonify({"comments": result}), 200
-        except Exception as e:
-            logging.error(f"Error retrieving all comments: {e}")
-            return jsonify({"error": "Internal Server Error"}), 500
+        ms = Comment.query.filter_by(IsArchived=False).all()
+        data = [{
+            "CommentID":   c.CommentID,
+            "TrailID":     c.TrailID,
+            "UserID":      c.UserID,
+            "CommentText": c.CommentText,
+            "CommentDate": c.CommentDate.isoformat()
+        } for c in ms]
+        return jsonify(comments=data), 200
 
-    # GET all comments for a specific trail
     @app.route('/trails/<int:trail_id>/comments', methods=['GET'])
     def get_comments_for_trail(trail_id):
-        try:
-            comments = Comment.query.filter_by(TrailID=trail_id, IsArchived=False).all()
-            result = [
-                {
-                    "CommentID": c.CommentID,
-                    "TrailID": c.TrailID,
-                    "UserID": c.UserID,
-                    "CommentText": c.CommentText,
-                    "CommentDate": c.CommentDate.isoformat()
-                }
-                for c in comments
-            ]
-            return jsonify({"comments": result}), 200
-        except Exception as e:
-            logging.error(f"Error retrieving comments: {e}")
-            return jsonify({"error": "Internal Server Error"}), 500
+        ms = Comment.query.filter_by(
+                 TrailID=trail_id,
+                 IsArchived=False).all()
+        data = [{
+            "CommentID":   c.CommentID,
+            "TrailID":     c.TrailID,
+            "UserID":      c.UserID,
+            "CommentText": c.CommentText,
+            "CommentDate": c.CommentDate.isoformat()
+        } for c in ms]
+        return jsonify(comments=data), 200
 
-    # POST a new comment to a trail
-    @app.route("/trails/<int:trail_id>/comments", methods=["POST"])
+    @app.route('/trails/<int:trail_id>/comments', methods=['POST'])
     def add_comment(trail_id):
-        if "username" not in session:
-            logging.warning("Unauthorized comment attempt.")
-            return jsonify({"error": "Unauthorized"}), 401
+        if 'username' not in session:
+            return jsonify(error="Unauthorized"), 401
+        user = User.query.filter_by(
+                   EmailAddress=session['username']).first_or_404(
+                   description="User not found")
+        data = request.get_json() or {}
+        text = data.get('CommentText')
+        if not text:
+            return jsonify(error="CommentText required"), 400
 
-        try:
-            data = request.get_json()
-            comment_text = data.get("CommentText")
+        c = Comment(
+            TrailID=trail_id,
+            UserID=user.UserID,
+            CommentText=text,
+            CommentDate=datetime.datetime.utcnow(),
+            IsArchived=False
+        )
+        db.session.add(c)
+        db.session.commit()
+        return jsonify(message="Comment added"), 201
 
-            if not comment_text:
-                return jsonify({"error": "CommentText is required."}), 400
-
-            user = User.query.filter_by(EmailAddress=session["username"]).first()
-
-            comment = Comment(
-                TrailID=trail_id,
-                UserID=user.UserID,
-                CommentText=comment_text,
-                CommentDate=datetime.datetime.utcnow(),
-                IsArchived=False
-            )
-            db.session.add(comment)
-            db.session.commit()
-
-            logging.info(f"Comment added to trail {trail_id} by user {user.EmailAddress}")
-            return jsonify({"message": "Comment added"}), 201
-
-        except Exception as e:
-            logging.error(f"Error adding comment: {e}")
-            return jsonify({"error": "Server error"}), 500
-
-    # PUT update a comment
     @app.route('/comments/<int:comment_id>', methods=['PUT'])
     def edit_comment(comment_id):
-        comment = Comment.query.get(comment_id)
-        if not comment:
-            return jsonify({"error": "Comment not found"}), 404
+        c = Comment.query.get_or_404(comment_id,
+                description="Comment not found")
+        user = User.query.filter_by(
+                   EmailAddress=session.get('username')).first()
+        if not user or (user.UserID != c.UserID and session.get('role')!='Admin'):
+            return jsonify(error="Forbidden"), 403
 
-        user = User.query.filter_by(EmailAddress=session.get('username')).first()
-        if not user or (user.UserID != comment.UserID and session.get('role') != 'Admin'):
-            return jsonify({"error": "Forbidden"}), 403
+        data = request.get_json() or {}
+        txt  = data.get('CommentText')
+        if not txt:
+            return jsonify(error="Missing CommentText"), 400
 
-        data = request.get_json()
-
-        content = data.get("CommentText")
-        if not content:
-            return jsonify({"error": "Missing CommentText"}), 400
-
-        comment.CommentText = content
+        c.CommentText = txt
         db.session.commit()
-        logging.info(f"Comment {comment_id} updated by user {user.EmailAddress}")
-        return jsonify({"message": "Comment updated"}), 200
+        return jsonify(message="Comment updated"), 200
 
-    # DELETE a comment
     @app.route('/comments/<int:comment_id>', methods=['DELETE'])
     def archive_comment(comment_id):
-        comment = Comment.query.get(comment_id)
-        if not comment:
-            return jsonify({"error": "Comment not found"}), 404
-
+        c = Comment.query.get_or_404(comment_id,
+                description="Comment not found")
         if session.get('role') != 'Admin':
-            return jsonify({"error": "Forbidden: Admins only"}), 403
-
-        comment.IsArchived = True
+            return jsonify(error="Forbidden"), 403
+        c.IsArchived = True
         db.session.commit()
-        logging.info(f"Comment {comment_id} archived by admin {session.get('username')}")
-        return jsonify({"message": "Comment archived"}), 200
+        return jsonify(message="Archived"), 200
 
     return app
 
 if __name__ == '__main__':
-    app = create_app()
-    app.run(debug=True, port=5000)
-
+    create_app().run(debug=True, port=5000)
