@@ -1,30 +1,53 @@
 # Trail Management API
 
-This repository contains the source code for the Trail Management API, a microservice designed to securely manage trail-related data, including CRUD operations for trails, role-based access control, and user authentication. The system integrates an external authenticator API for secure login and utilizes a relational database for managing trails and user roles.
+A Flask-based RESTful API for managing walking and hiking trails, built with SQLAlchemy and session-based authentication. Includes full CRUD functionality for trails and comments, with role-based access control for admin users.
 
-## Features
+---
 
-- **Secure Authentication:** Integrates an external authenticator API to validate user credentials.
-- **Role-Based Access Control:** Restricts sensitive operations to Admin users while allowing general users to view trails.
-- **CRUD Operations:** Create, Read, Update, and Delete functionality for managing trail data.
-- **Relational Database:** SQLAlchemy ORM for efficient database interaction.
-- **Interactive Documentation:** Swagger UI for exploring and testing API endpoints.
+## Overview
 
+This project is part of a coursework assignment for COMP2001. It focuses on developing and testing a secure backend service using Flask, SQLAlchemy, and external user authentication via the university's API.
 
+---
 
-## API Endpoints
+##  Features
 
-| Endpoint            | Method | Description                   |
-|---------------------|--------|-------------------------------|
-| `/login`            | POST   | Authenticates a user.         |
-| `/logout`           | POST   | Logs out the current user.    |
-| `/trails`           | GET    | Retrieves all trails.         |
-| `/trails`           | POST   | Creates a new trail (Admin).  |
-| `/trails/<trail_id>`| GET    | Retrieves a specific trail.   |
-| `/trails/<trail_id>`| PUT    | Updates a trail (Admin).      |
-| `/trails/<trail_id>`| DELETE | Deletes a trail (Admin).      |
+- User login/logout with session handling
+- Role-based access control (`User` vs `Admin`)
+- CRUD operations for:
+  - **Trails** 
+  - **Comments** (User can create/edit own, Admin can archive, edit)
+- Swagger UI documentation at `/api/docs`
+- Input validation and error handling
+- Soft-delete functionality for comments
 
-## Known Issues
+---
 
-Docker deployment is currently unavailable due to a macOS issue falsely flagging Docker Desktop as malware. Refer to this report for details.
-=
+## Endpoints Summary
+
+| Method | Endpoint                        | Access       | Description                          |
+|--------|----------------------------------|--------------|--------------------------------------|
+| GET    | `/trails`                       | Public       | Get all trails                       |
+| GET    | `/trails/<id>`                  | Public       | Get single trail                     |
+| POST   | `/trails`                       | Admin only   | Create new trail                     |
+| PUT    | `/trails/<id>`                  | Admin only   | Update trail                         |
+| DELETE | `/trails/<id>`                  | Admin only   | Delete trail                         |
+| GET    | `/comments`                     | Public       | View all non-archived comments       |
+| GET    | `/trails/<id>/comments`         | Public       | View comments for a specific trail   |
+| POST   | `/trails/<id>/comments`         | Logged-in    | Add a comment to a trail             |
+| PUT    | `/comments/<id>`                | Owner/Admin  | Edit a comment                       |
+| DELETE | `/comments/<id>`                | Admin only   | Archive a comment    |
+| POST   | `/login`                        | Public       | Log in                               |
+| POST   | `/logout`                       | Logged-in    | Log out                              |
+
+---
+
+##  Setup Instructions
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/your-username/trail-api.git
+   cd trail-api
+
+   python3 app.py
+   
