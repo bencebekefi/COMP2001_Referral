@@ -12,9 +12,8 @@ class Config:
     SQLALCHEMY_DATABASE_URI = os.environ.get(
         'DATABASE_URI',
         "mssql+pyodbc://BBekefi:AqrM335*@DIST-6-505.uopnet.plymouth.ac.uk/COMP2001_BBekefi"
-        "?driver=FreeTDS"
-        "&TDS_Version=8.0"
-        "&host_is_server=yes"
+        "?driver=ODBC+Driver+18+for+SQL+Server"
+        "&TrustServerCertificate=yes"
     )
 
 class DevelopmentConfig(Config):
@@ -28,5 +27,5 @@ class TestingConfig(Config):
     )
 
 class ProductionConfig(Config):
-    DEBUG   = False
+    DEBUG = False
     TESTING = False
